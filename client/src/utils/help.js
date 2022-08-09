@@ -1,54 +1,78 @@
-const express = require('express');
-const { ApolloServer } = require("apollo-server-express");
-const path = require('path');
-const db = require('./config/connection');
-const routes = require('./routes');
-const { authMiddleware } = require("./utils/auth");
+const { AuthenticationError } = require('apollo-server-express');
+const { User } = require('../models');
+const { signToken } = require('../utils/auth');
 
-const { typeDefs, resolvers } = require("./schemas");
-
-const app = express();
-const PORT = process.env.PORT || 3001;
-const server = new ApolloServer({
-  typeDefs,
-  resolvers,
-  context: authMiddleware,
-});
-
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
-
-// if we're in production, serve client/build as static assets
-if (process.env.NODE_ENV === 'production')
-{
-  app.use(express.static(path.join(__dirname, '../client/build')));
-}
-
-app.use(routes);
-
-// app.get('/', (req, res) =>
-// {
-//   res.sendFile(path.join(__dirname, '../client/build/index.html'));
-// });
-
-const startApolloServer = async (typeDefs, resolvers) =>
-{
-  await server.start();
-  server.applyMiddleware({ app });
-
-  db.once('open', () =>
-  {
-    app.listen(PORT, () =>
+const resolvers = {
+  Query: {
+    me: async (parent, args, context) =>
     {
-      console.log(`API server running on port ${PORT}!`);
-      console.log(`Use GraphQL at http://localhost:${PORT}${server.graphqlPath}`);
-    })
-  })
+      if (context.user)
+      {
+        return User.findOne({ _id: context.user._id });
+      }
+      throw new AuthenticationError('You need to be logged in!');
+    },
+  },
+
+  Mutation: {
+    addUser: async (parent, { username, email, password }) =>
+    {
+      const user = await User.create({ username, email, password });
+      const token = signToken(user);
+      return { token, user };
+    },
+    loginUser: async (parent, { email, password }) =>
+    {
+      const user = await User.findOne({ email });
+
+      if (!user)
+      {
+        throw new AuthenticationError('No user found with this email address');
+      }
+
+      const correctPw = await user.isCorrectPassword(password);
+
+      if (!correctPw)
+      {
+        throw new AuthenticationError('Incorrect credentials');
+      }
+
+      const token = signToken(user);
+
+      return { token, user };
+    },
+    saveBook: async (parent, { book }, context) =>
+    {
+      if (context.user)
+      {
+        return User.findOneAndUpdate(
+          { _id: context.user._id },
+          {
+            $addToSet: {
+              savedBooks: { book }
+            }
+          },
+          {
+            new: true,
+            runValidators: true
+          }
+        );
+      }
+      throw new AuthenticationError("You need to be logged in!");
+    },
+    removeBook: async (parent, { bookId }, context) =>
+    {
+      if (context.user)
+      {
+        return User.findOneAndUpdate(
+          { _id: context.user._id },
+          { $pull: { savedBooks: { bookId } } },
+          { new: true }
+        );
+      }
+      throw new AuthenticationError('You need to be logged in!');
+    },
+  },
 };
 
-startApolloServer(typeDefs, resolvers);
-
-// db.once('open', () =>
-// {
-//   app.listen(PORT, () => console.log(`🌍 Now listening on localhost:${PORT}`));
-// });
+module.exports = resolvers;
