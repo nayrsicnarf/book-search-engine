@@ -1,78 +1,44 @@
-const { AuthenticationError } = require('apollo-server-express');
-const { User } = require('../models');
-const { signToken } = require('../utils/auth');
+const jwt = require('jsonwebtoken');
 
-const resolvers = {
-  Query: {
-    me: async (parent, args, context) =>
+// set token secret and expiration date
+const secret = 'mysecretquiet';
+const expiration = '2h';
+
+module.exports = {
+  // function for our authenticated routes
+  authMiddleware: function ({ req })
+  {
+    // allows token to be sent via  req.query or headers
+    let token = req.body.token || req.query.token || req.headers.authorization;
+
+    // ["Bearer", "<tokenvalue>"]
+    if (req.headers.authorization)
     {
-      if (context.user)
-      {
-        return User.findOne({ _id: context.user._id });
-      }
-      throw new AuthenticationError('You need to be logged in!');
-    },
+      token = token.split(' ').pop().trim();
+    }
+
+    if (!token)
+    {
+      return req;
+    }
+
+    // verify token and get user data out of it
+    try
+    {
+      const { data } = jwt.verify(token, secret, { maxAge: expiration });
+      req.user = data;
+    } catch {
+      console.log('Invalid token');
+      return req;
+    }
+
+    // send to next endpoint
+    return req;
   },
+  signToken: function ({ username, email, _id })
+  {
+    const payload = { username, email, _id };
 
-  Mutation: {
-    addUser: async (parent, { username, email, password }) =>
-    {
-      const user = await User.create({ username, email, password });
-      const token = signToken(user);
-      return { token, user };
-    },
-    loginUser: async (parent, { email, password }) =>
-    {
-      const user = await User.findOne({ email });
-
-      if (!user)
-      {
-        throw new AuthenticationError('No user found with this email address');
-      }
-
-      const correctPw = await user.isCorrectPassword(password);
-
-      if (!correctPw)
-      {
-        throw new AuthenticationError('Incorrect credentials');
-      }
-
-      const token = signToken(user);
-
-      return { token, user };
-    },
-    saveBook: async (parent, { book }, context) =>
-    {
-      if (context.user)
-      {
-        return User.findOneAndUpdate(
-          { _id: context.user._id },
-          {
-            $addToSet: {
-              savedBooks: { book }
-            }
-          },
-          {
-            new: true,
-            runValidators: true
-          }
-        );
-      }
-      throw new AuthenticationError("You need to be logged in!");
-    },
-    removeBook: async (parent, { bookId }, context) =>
-    {
-      if (context.user)
-      {
-        return User.findOneAndUpdate(
-          { _id: context.user._id },
-          { $pull: { savedBooks: { bookId } } },
-          { new: true }
-        );
-      }
-      throw new AuthenticationError('You need to be logged in!');
-    },
+    return jwt.sign({ data: payload }, secret, { expiresIn: expiration });
   },
 };
-
-module.exports = resolvers;
